@@ -2,7 +2,6 @@
 
 const char* ssid = "R4-AccessPoint";
 const char* password = "mypassword";
-
 WiFiServer server(80);
 int ledPin = 13;
 
@@ -16,11 +15,6 @@ void setup() {
   WiFi.beginAP(ssid, password);
   Serial.print("Starting AP: ");
   Serial.println(ssid);
-
-  //while (WiFi.status() != WL_CONNECTED) {
-  //  delay(500);
-  //  Serial.print(".");
-  //}
 
   Serial.println("\nAccess Point started!");
   IPAddress IP = WiFi.localIP();
