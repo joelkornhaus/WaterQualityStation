@@ -3,6 +3,8 @@
 #include <WiFiS3.h>
 #include <SD.h>
 #include <SPI.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 // Declare Functions Prior to defining them
 void startAccessPoint();
@@ -41,6 +43,31 @@ const char html[] = R"rawliteral(
 </html>
 )rawliteral";
 
+File root;
+
+void printDirectory(File dir, int numTabs) {
+  while (true) {
+
+    File entry =  dir.openNextFile();
+    if (! entry) {
+      // no more files
+      break;
+    }
+    for (uint8_t i = 0; i < numTabs; i++) {
+      Serial.print('\t');
+    }
+    Serial.print(entry.name());
+    if (entry.isDirectory()) {
+      Serial.println("/");
+      printDirectory(entry, numTabs + 1);
+    } else {
+      // files have sizes, directories do not
+      Serial.print("\t\t");
+      Serial.println(entry.size(), DEC);
+    }
+    entry.close();
+  }
+}
 
 void setup() {
   pinMode(buttonPin, INPUT_PULLUP); // assumes grounded button when pressed
@@ -54,6 +81,9 @@ void setup() {
 
   // Load default state
   lastButtonState = digitalRead(buttonPin);
+
+  root = SD.open("/");
+  printDirectory(root,0);
 
 }
 
@@ -135,7 +165,11 @@ void sendHTML(WiFiClient& client, const char* content) {
   client.println("Content-Type: text/html");
   client.println("Connection: close");
   client.println();
-  client.println(content);
+  if (content) {
+    client.println(content);
+  } else {
+    client.println(html);
+  }
 }
 
 void sendCSV(WiFiClient& client) {
