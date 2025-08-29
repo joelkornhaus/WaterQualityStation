@@ -1,5 +1,5 @@
 // TODOS
-// 1. Implement buffering in web server to improve download speed
+// 1. Implement buffering in web server to improve download speed - this can wait until later
 // 2. Implement data recording in 2 second chunks
 // 3. Implement sleeping in 2 second chunks
 
@@ -23,6 +23,9 @@ DallasTemperature sensors(&oneWire);
 
 // SD Card wiring configuration uses chipSelect 10
 int chipSelect = 10;
+// MOSI - 11
+// MISO - 12
+// SCK - 13
 
 // A0 has turbidity meter
 int turbPin = A0;
@@ -39,10 +42,11 @@ int emitPin = A3;
 ////////////////////// Global Variables ///////////////////////
 
 bool apActive = false; // Access point (hotspot) running?
-bool lastButtonState = LOW; //initialize button state
-bool readingActive = false; // show whether sensor read sequence is active
+bool buttonState; // Initialize current button state
+bool lastButtonState; // Initialize button state
+bool readingActive; // show whether sensor read sequence is active
 unsigned long apTouchWatch = 0; // timestamp of last time the user interacted with the access point
-unsigned long cycleStart = 0; // start of 10 minute measure/sleep cycle
+unsigned long readCycleStart; // start of 10 minute measure/sleep cycle
 const unsigned long measureCycle = 600000; // 10 minute combined measure/sleep cycle length
 const unsigned long apTimeout = 600000; // 10 minute timeout
 File sdFile;
@@ -74,11 +78,13 @@ const char* const csvHeaders[] = {
 };
 
 // Globals used for reading sequence
-int temperatureBuffer[30];
-int LEDOnBuffer[30];
-int LEDOffBuffer[30];
-int turbidityDiffBuffer[30];
-int TDSBuffer[30]; 
+int readIndex = 0; // initialize the reading index to be 0
+float temperatureBuffer[30];
+float LEDOnBuffer[30];
+float LEDOffBuffer[30];
+float turbidityDiffBuffer[30];
+float TDSBuffer[30];
+float presBuffer[30];
 
 // NOTE: WEB SERVER CAN BE ACCESSED ONLY AT: http://192.168.4.1
 const char ssid[] = "EMUWaterQuality"; // name of wifi Access Point/hotspot
@@ -118,7 +124,7 @@ void setup() {
   Serial.println("SD card initialized.");
 
   //kick off the measure/sleep cycle the first time the monitor kicks on
-  cycleStart = millis(); 
+  readCycleStart = 0; 
   readingActive = true;
 
 }
@@ -208,38 +214,114 @@ void loop() {
 
 
   } else{
-    // If we've made it here, we should either be recording data or sleeping
+    // If we've made it here, we should either be recording data or sleeping, depending how much time has passed
+    // check whether it's time to update ReadingActive flag
+    if (millis()-readCycleStart > 10000){
+      readingActive = true;
+      readCycleStart = millis();
+    }
+
     if (readingActive){
       // PUT LOGIC TO READ IN 2 SECOND Increments HERE
+      // first 30 reads get temperature and emitter off value
+      if (readIndex < 30) {
+        digitalWrite(emitPin,HIGH);
+
+        // Collect Temperature value, no need to calibrate since it's already calibrated. Put it into buffer array
+        sensors.requestTemperatures();
+        float tempF = sensors.getTempFByIndex(0);
+        temperatureBuffer[readIndex] = tempF;
+        Serial.println(tempF);
+        // Collect Turb value, calibrate it, then put it into buffer array
+        int rawTurb = analogRead(turbPin);
+        float calTurb = turbRaw2Cal(rawTurb);
+        LEDOffBuffer[readIndex] = calTurb;
+        Serial.println(calTurb);
+
+        readIndex++;
+        delay(2000);
+
+      // next 30 reads get 
+      } else if (29 < readIndex < 59 ){
+        digitalWrite(emitPin,LOW);
+
+        // Collect TDS Reading, calibrate it, then put it into buffer array
+        int rawTDS = analogRead(tdsPin);
+        float calTDS = tdsRaw2Cal(rawTDS);
+        TDSBuffer[readIndex-30] = calTDS;
+        Serial.println(rawTDS);
+        // Collect Pressure Reading, calibrate it, then put it into buffer array
+        int rawPres = analogRead(presPin);
+        float calPres = presRaw2Cal(rawPres);
+        presBuffer[readIndex-30] = calPres;
+        Serial.println(calPres);
+        // Collect Turb value, calibrate it, then put it into buffer array
+        int rawTurb = analogRead(turbPin);
+        float calTurb = turbRaw2Cal(rawTurb);
+        LEDOnBuffer[readIndex-30] = calTurb;
+        Serial.println(calTurb);
+        readIndex++;
+        delay(2000);
+      
+      } else{
+          // at this point, we're still "reading" but have taken all of our data, finish the calculations and write then to the CSV
+          
+          // populate turbidityDiffBuffer by subtracting LEDOff from LEDOn
+          subtractArrays(LEDOnBuffer,LEDOffBuffer,turbidityDiffBuffer,sizeof(LEDOnBuffer));
+
+          float tempMed = median(temperatureBuffer,sizeof(temperatureBuffer)/sizeof(temperatureBuffer[0]));
+          float LEDOnMed = median(LEDOnBuffer,sizeof(LEDOnBuffer)/sizeof(LEDOnBuffer[0]));
+          float LEDOffMed = median(LEDOffBuffer,sizeof(LEDOffBuffer)/sizeof(LEDOffBuffer[0]));
+          float turbMed = median(turbidityDiffBuffer,sizeof(turbidityDiffBuffer)/sizeof(turbidityDiffBuffer[0]));
+          float tdsMed = median(TDSBuffer,sizeof(TDSBuffer)/sizeof(TDSBuffer[0]));
+          float presMed = median(presBuffer,sizeof(presBuffer)/sizeof(presBuffer[0]));
+
+          // Buffers for converted float values
+          char tempStr[12];
+          char ledOnStr[12];
+          char ledOffStr[12];
+          char turbStr[12];
+          char tdsStr[12];
+          char presStr[12];
+
+          // Convert floats to strings
+          dtostrf(tempMed, 1, 4, tempStr);
+          dtostrf(LEDOnMed, 1, 4, ledOnStr);
+          dtostrf(LEDOffMed, 1, 4, ledOffStr);
+          dtostrf(turbMed, 1, 4, turbStr);
+          dtostrf(tdsMed, 1, 4, tdsStr);
+          dtostrf(presMed, 1, 4, presStr);
+          char* time = uptimeString();
+          // Put everything (including time string) into char* array
+          const char* fields[] = {time, tempStr, ledOnStr, ledOffStr, turbStr, tdsStr, presStr};
+
+          writeValuesToCSV(fields,7);
+          //clear Reading Buffers in order to set reading active flag to false (and perform other cleanup actions
+          //that may be added in the future)
+          clearReadingBuffer();
+      }
 
     } else{
       // Reading is not active, sleep/delay in 2 second increments until it is time to read again
       // (We sleep/delay in 2 second increments so that AP can still wake up quickly if button pressed)
-
       // PUT LOGIC TO SLEEP IN 2 SECOND Increments HERE
+      delay(2000);
     }
 
   }
 
 
-
-
-
-
-
-
-
-
-
-  sensors.requestTemperatures();
-  float tempF = sensors.getTempFByIndex(0);
+  //sensors.requestTemperatures();
+  //float tempF = sensors.getTempFByIndex(0);
   //Serial.println(tempF);
-  int rawTurb = analogRead(turbPin);
+  //digitalWrite(emitPin, HIGH);
+  //int rawTurb = analogRead(turbPin);
   //Serial.println(rawTurb);
-  int rawTDS = analogRead(tdsPin);
+  //int rawTDS = analogRead(tdsPin);
   //Serial.println(rawTDS);
-  int rawPres = analogRead(presPin);
-  
+  //int rawPres = analogRead(presPin);
+  //float calPres = presRaw2Cal(rawPres);
+  //Serial.println(calPres);
  
 }
 
@@ -247,8 +329,7 @@ void loop() {
 
 void clearReadingBuffer() {
   //clears all buffers used in sensor read sequence and sets readingActive to false
-  
-  
+  int readIndex = 0; // initialize the reading index to be 0
   readingActive = false;
 }
 
@@ -295,34 +376,38 @@ void listFilesHTML(File dir, WiFiClient &client) {
   }
 }
 
-void writeValuesToCSV(float values[sizeof(csvHeaders)]) {
+void writeValuesToCSV(const char* fields[], int fieldCount) {
   const char* filename = fileNameFromTime();
-  // Try to open the file in read mode to check if it exists
   bool fileExists = SD.exists(filename);
   File dataFile = SD.open(filename, FILE_WRITE);
+
   if (!dataFile) {
     Serial.println("Error opening file!");
     return;
   }
-  // If the file didn’t exist, add headers
+
+  // Write headers if the file is new
   if (!fileExists) {
-    for (int i = 0; i < sizeof(csvHeaders); i++) {
+    for (int i = 0; i < sizeof(csvHeaders) / sizeof(csvHeaders[0]); i++) {
       dataFile.print(csvHeaders[i]);
-      if (i < sizeof(csvHeaders)-1) dataFile.print(",");  // commas between columns
+      if (i < (sizeof(csvHeaders) / sizeof(csvHeaders[0])) - 1) dataFile.print(",");
     }
-    dataFile.println();  // new line after headers
+    dataFile.println();
   }
-  // Write the values
-  for (int i = 0; i < sizeof(csvHeaders); i++) {
-    dataFile.print(values[i], 4); // 4 decimal places
-    if (i < 9) dataFile.print(",");
+
+  // Write all fields
+  for (int i = 0; i < fieldCount; i++) {
+    dataFile.print(fields[i]);
+    if (i < fieldCount - 1) dataFile.print(",");
   }
   dataFile.println();
+
   dataFile.close();
   Serial.println("Values written to CSV.");
 }
 
-const char* fileNameFromTime() {
+
+char* fileNameFromTime() {
   // Generates file Name based on Current Time, for now each reading will be its own file 
   // which is alright, in the future it will be generated based on date
   static char filename[50]; // persistent buffer across calls
@@ -338,21 +423,22 @@ const char* fileNameFromTime() {
   return filename;
 }
 
-float turbRaw2Cal(float raw){
+float turbRaw2Cal(int raw){
   // use calibration curve to calculate calibrated reading
   return raw; // for now just pass raw value through
 }
 
-float tdsRaw2Cal(float raw){
+float tdsRaw2Cal(int raw){
   // use calibration curve to calculate calibrated reading
   return raw; // for now just pass raw value through
 }
 
-float presRaw2Cal(float raw){
+float presRaw2Cal(int raw){
   // according to specs outputs 0.5-4.5V
   // linearly scales between 0 MPa and 1.6 MPa
   // y = mx + b where x is raw value, m = 0.4 MPa, and b = -0.2 MPa
-  return ((raw * 0.4) - 0.2);
+  float volts = analogRead2Volts(raw);
+  return ((volts * 0.4) - 0.2);
 }
 
 float analogRead2Volts(int analogValue) {
@@ -361,4 +447,51 @@ float analogRead2Volts(int analogValue) {
   const float referenceVoltage = 5.0; 
   const int adcResolution = 4095; 
   return (analogValue * referenceVoltage) / adcResolution;
+}
+
+float median(float arr[], int size) {
+  // Copy input array into a temporary array
+  float temp[size];
+  for (int i = 0; i < size; i++) {
+    temp[i] = arr[i];
+  }
+
+  // Simple bubble sort (fine for small arrays like yours)
+  for (int i = 0; i < size - 1; i++) {
+    for (int j = 0; j < size - i - 1; j++) {
+      if (temp[j] > temp[j + 1]) {
+        float t = temp[j];
+        temp[j] = temp[j + 1];
+        temp[j + 1] = t;
+      }
+    }
+  }
+  // Return median
+  if (size % 2 == 0) {
+    // Even number of elements → average of middle two
+    return (temp[size/2 - 1] + temp[size/2]) / 2.0;
+  } else {
+    // Odd number of elements → middle value
+    return temp[size/2];
+  }
+}
+
+void subtractArrays(const float* a, const float* b, float* result, int size) {
+  for (int i = 0; i < size; i++) {
+    result[i] = a[i] - b[i];
+  }
+}
+
+char* uptimeString() {
+  unsigned long ms = millis() / 1000; // convert to seconds
+  unsigned long seconds = ms % 60;
+  unsigned long minutes = (ms / 60) % 60;
+  unsigned long hours   = (ms / 3600) % 24;
+  unsigned long days    = ms / 86400;
+
+  // static buffer so it persists after function returns
+  static char buffer[20];  
+  snprintf(buffer, sizeof(buffer), "%02lu:%02lu:%02lu:%02lu",
+           days, hours, minutes, seconds);
+  return buffer;
 }
