@@ -137,7 +137,6 @@ void stopAccessPoint() {
   WiFi.end();
   Serial.println("Access Point Stopped");
   apActive = false;
-  //digitalWrite(ledPin, LOW); // show AP inactive
 }
 
 void handleClient() {

@@ -7,39 +7,50 @@
 
 #include <OneWire.h> //used to read temperature sensor
 #include <DallasTemperature.h> //used to read temperature sensor
-#include <WiFiS3.h> //used to host web server for data
+#include <WiFi.h> //used as a dependency of ESPAsyncWebServer
+#include <ESPAsyncWebServer.h> //used to make the web server hosting non-blocking
+#include <FS.h>
 #include <SD.h> //used to communicate with SD card
 #include <SPI.h> //needed to communicate with SD card? (not certain it's necessary)
 
 ///////////////////// Pin Definitions ////////////////////////
-// Latching Wifi Wake button is on pin 2
-int buttonPin = 2;
+// Latching Wifi Wake button is on pin GPIO 14 (D14?)
+int buttonPin = 14;
 
-// digital pin 4 has temperature sensor
-int tempPin = 4;
+// pin GPIO 15 has temperature sensor
+int tempPin = 15;
 #define ONE_WIRE_BUS tempPin
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
-// SD Card wiring configuration uses chipSelect 10
-int chipSelect = 10;
+// SD Card wiring configuration uses chipSelect on GPIO 5 because this is common
+// in ESP32 SD card breakout board tutorials
+int chipSelect = 5;
+//     Connect the other pins as follows
+//     MOSI = GPIO 23
+//     MISO = GPIO 19
+//     SCK  = GPIO 18
 
-// A0 has turbidity meter
-int turbPin = A0;
+// GPIO 34 has turbidity meter
+int turbPin = 34;
 
-// A1 has pressure sensor
-int presPin = A1;
+// GPIO 35 has pressure sensor
+int presPin = 35;
 
-// A2 has TDS meter (total dissolved solids)
-int tdsPin = A2;
+// GPIO 32 has TDS meter (total dissolved solids)
+int tdsPin = 32;
 
-// Turbidity emitter is powered by pin 3
-int emitPin = A3;
+// Turbidity emitter is controlled with pin GPIO 25
+// This pin has PWM capabilities, so in the future we could play around with
+// modulating the brightness if that seemed worthwhile
+int emitPin = 25;
 
 ////////////////////// Global Variables ///////////////////////
 
+const float referenceVoltage = 3.3; // reference voltage for analog values
 bool apActive = false; // Access point (hotspot) running?
-bool lastButtonState = LOW; //initialize button state
+bool buttonState; // initialize current button state
+bool lastButtonState; //initialize last button state
 bool readingActive = false; // show whether sensor read sequence is active
 unsigned long apTouchWatch = 0; // timestamp of last time the user interacted with the access point
 unsigned long cycleStart = 0; // start of 10 minute measure/sleep cycle
@@ -83,31 +94,20 @@ int TDSBuffer[30];
 // NOTE: WEB SERVER CAN BE ACCESSED ONLY AT: http://192.168.4.1
 const char ssid[] = "EMUWaterQuality"; // name of wifi Access Point/hotspot
 const char pass[] = ""; //password to wifi Access Point: "" results in no password requirement
-WiFiServer server(80); //web server port set to 80 (standard for http)
+AsyncWebServer server(80); //web server port set to 80 (standard for http)
 
-/*
-// HTML page
-const char html[] = R"rawliteral(
-<!DOCTYPE html>
-<html>
-  <head><title>Water Monitor</title></head>
-  <body>
-    <h1>Water Quality Monitor</h1>
-    <button onclick="fetch('/disconnect')">Disconnect</button>
-    <a href="/download">Download File</a>
-    <script>
-      // Future: add status updates or controls
-    </script>
-  </body>
-</html>
-)rawliteral";
-*/
+/////////////// Function Declarations ///////////////////////////////////
+void startAccessPoint();
+void stopAccessPoint();
+void clearReadingBuffer();
+const char* fileNameFromTime();
 
 
 /////////////// Setup ////////////////////////////////////////////////////
 void setup() {
   pinMode(buttonPin, INPUT_PULLUP); // pin tied to ground when button latched
   pinMode(emitPin, OUTPUT); // set up emitPin to power LED
+  
   Serial.begin(9600); // initialize serial communication
   sensors.begin(); // initialize oneWire bus, prepares temp sensor for communication
   buttonState = digitalRead(buttonPin); //read button PIN state upon startup
@@ -144,68 +144,7 @@ void loop() {
   }
   // if AP is active now, then the reading logic is not
   if (apActive){
-
     // PUT ALL THE WEB SERVER BEHAVIOR HERE
-    WiFiClient client = server.available();
-    if (!client) return;
-    // Wait for client request
-    while (client.connected() && !client.available()) delay(1);
-
-    String request = client.readStringUntil('\r');
-    client.flush();
-
-    Serial.println(request);
-      // Root page -> show file list
-    if (request.indexOf("GET / ") >= 0) {
-      client.println("HTTP/1.1 200 OK");
-      client.println("Content-Type: text/html");
-      client.println("Connection: close");
-      client.println();
-
-      client.println("<!DOCTYPE HTML>");
-      client.println("<html><body>");
-      client.println("<h2>SD Card File List</h2>");
-      client.println("<ul>");
-
-      File root = SD.open("/");
-      listFilesHTML(root, client);
-
-      client.println("</ul>");
-      client.println("</body></html>");
-      root.close();
-    } 
-    // File download request
-    else if (request.indexOf("GET /download?file=") >= 0) {
-      int start = request.indexOf("file=") + 5;
-      int end = request.indexOf(" ", start);
-      String filename = request.substring(start, end);
-
-      Serial.print("Client requested: ");
-      Serial.println(filename);
-
-      if (SD.exists(filename)) {
-        File downloadFile = SD.open(filename, FILE_READ);
-
-        client.println("HTTP/1.1 200 OK");
-        client.println("Content-Type: application/octet-stream");
-        client.print("Content-Disposition: attachment; filename=");
-        client.println(filename);
-        client.println("Connection: close");
-        client.println();
-
-        // Send file contents
-        while (downloadFile.available()) {
-          client.write(downloadFile.read());
-        }
-        downloadFile.close();
-      } else {
-        client.println("HTTP/1.1 404 Not Found");
-        client.println("Content-Type: text/html");
-        client.println();
-        client.println("<h3>File Not Found</h3>");
-      }
-    }
-
 
   } else{
     // If we've made it here, we should either be recording data or sleeping
@@ -233,12 +172,13 @@ void loop() {
 
   sensors.requestTemperatures();
   float tempF = sensors.getTempFByIndex(0);
-  //Serial.println(tempF);
+  Serial.println(tempF);
   int rawTurb = analogRead(turbPin);
-  //Serial.println(rawTurb);
+  Serial.println(rawTurb);
   int rawTDS = analogRead(tdsPin);
-  //Serial.println(rawTDS);
+  Serial.println(rawTDS);
   int rawPres = analogRead(presPin);
+  Serial.println(rawPres);
   
  
 }
@@ -253,28 +193,62 @@ void clearReadingBuffer() {
 }
 
 void startAccessPoint() {
-   //attempt to start access point
-  //TODO: Investigate why this doesn't work when pw included
-  bool result = WiFi.beginAP(ssid); 
-  //check for errors
-  delay(500);
+   //attempt to start access point (Hotspot)
+  bool result = WiFi.softAP(ssid); 
+  delay(100); // short delay to allow AP time to settle
+  
   if (!result) {
     Serial.println("Failed to start AP!");
   } else {
     Serial.println("AP started");
   }
-  IPAddress ip = WiFi.localIP();
+  IPAddress ip = WiFi.softAPIP();
   Serial.print("AP IP: "); Serial.println(ip);
+
+  // Configure Requests:
+
+  // Root: list SD files
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+  String html = "<!DOCTYPE HTML><html><body>";
+  html += "<h2>SD Card File List</h2><ul>";
+  File root = SD.open("/");
+  File file = root.openNextFile();
+  while (file) {
+    String filename = String(file.name());
+    html += "<li><a href=\"/download?file=" + filename + "\">" + filename + "</a></li>";
+    file = root.openNextFile();
+  }
+  root.close();
+  html += "</ul></body></html>";
+  request->send(200, "text/html", html);
+  });
+
+  // Download: stream file to client
+  server.on("/download", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("file")) {
+      String filename = request->getParam("file")->value();
+      if (SD.exists(filename)) {
+        request->send(SD, filename, "application/octet-stream", true);
+      } else {
+        request->send(404, "text/html", "<h3>File Not Found</h3>");
+      }
+    } else {
+      request->send(400, "text/html", "<h3>Bad Request: no file param</h3>");
+    }
+  });
+
   server.begin();
+  // get time when AP is starting
   apTouchWatch = millis();
   apActive = true;
-  //digitalWrite(ledPin, HIGH); // show AP active
   Serial.println("Access Point Active!");
 }
 
 void stopAccessPoint() {
   //stops the access point
-  WiFi.end();
+  server.end();
+  WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true);
   Serial.println("Access Point Stopped");
   apActive = false;
 }
@@ -357,8 +331,7 @@ float presRaw2Cal(float raw){
 
 float analogRead2Volts(int analogValue) {
   // Converts raw ADC reading to voltage
-  // Uno R4 WiFi has a 12-bit ADC (0-4095)
-  const float referenceVoltage = 5.0; 
+  // Uno R4 WiFi has a 12-bit ADC (0-4095) 
   const int adcResolution = 4095; 
   return (analogValue * referenceVoltage) / adcResolution;
 }
