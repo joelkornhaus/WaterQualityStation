@@ -242,14 +242,14 @@ void loop() {
         delay(2000);
 
       // next 30 reads get 
-      } else if (29 < readIndex < 59 ){
+      } else if (readIndex > 29 && readIndex < 59 ){
         digitalWrite(emitPin,LOW);
 
         // Collect TDS Reading, calibrate it, then put it into buffer array
         int rawTDS = analogRead(tdsPin);
         float calTDS = tdsRaw2Cal(rawTDS);
         TDSBuffer[readIndex-30] = calTDS;
-        Serial.println(rawTDS);
+        Serial.println(calTDS);
         // Collect Pressure Reading, calibrate it, then put it into buffer array
         int rawPres = analogRead(presPin);
         float calPres = presRaw2Cal(rawPres);
@@ -267,7 +267,7 @@ void loop() {
           // at this point, we're still "reading" but have taken all of our data, finish the calculations and write then to the CSV
           
           // populate turbidityDiffBuffer by subtracting LEDOff from LEDOn
-          subtractArrays(LEDOnBuffer,LEDOffBuffer,turbidityDiffBuffer,sizeof(LEDOnBuffer));
+          subtractArrays(LEDOnBuffer,LEDOffBuffer,turbidityDiffBuffer,sizeof(LEDOnBuffer)/sizeof(LEDOnBuffer[0]));
 
           float tempMed = median(temperatureBuffer,sizeof(temperatureBuffer)/sizeof(temperatureBuffer[0]));
           float LEDOnMed = median(LEDOnBuffer,sizeof(LEDOnBuffer)/sizeof(LEDOnBuffer[0]));
@@ -329,7 +329,7 @@ void loop() {
 
 void clearReadingBuffer() {
   //clears all buffers used in sensor read sequence and sets readingActive to false
-  int readIndex = 0; // initialize the reading index to be 0
+  readIndex = 0; // initialize the reading index to be 0
   readingActive = false;
 }
 
