@@ -117,11 +117,13 @@ void setup() {
   Serial.begin(9600); // initialize serial communication
   sensors.begin(); // initialize oneWire bus, prepares temp sensor for communication
   buttonState = digitalRead(buttonPin); //read button PIN state upon startup
-  delay(2000); // For some reason waiting 2 seconds seems to help give time to detect the SD Card
+  delay(5000); // For some reason waiting 5 seconds seems to help give time to detect the SD Card
   if (!SD.begin()){
     Serial.println("SD Card initialization failed!");
+  } else{
+    Serial.println("SD card initialized.");
   }
-  Serial.println("SD card initialized.");
+  
 
   //kick off the measure/sleep cycle the first time the monitor kicks on
   readCycleStart = 0; 
@@ -216,7 +218,7 @@ void loop() {
   } else{
     // If we've made it here, we should either be recording data or sleeping, depending how much time has passed
     // check whether it's time to update ReadingActive flag
-    if (millis()-readCycleStart > 10000){
+    if (millis()-readCycleStart > 600000){
       readingActive = true;
       readCycleStart = millis();
     }
@@ -376,50 +378,48 @@ void listFilesHTML(File dir, WiFiClient &client) {
   }
 }
 
-void writeValuesToCSV(const char* fields[], int fieldCount) {
+void writeValuesToCSV(const char* values[], int valueCount) {
   const char* filename = fileNameFromTime();
-  bool fileExists = SD.exists(filename);
-  File dataFile = SD.open(filename, FILE_WRITE);
 
-  if (!dataFile) {
-    Serial.println("Error opening file!");
-    return;
+  // If file doesn’t exist, create it and add header
+  if (!SD.exists(filename)) {
+    File newFile = SD.open(filename, FILE_WRITE);
+    if (newFile) {
+      // optional header row:
+      newFile.println("Time,Temp,LEDOn,LEDOff,Turbidity,TDS,Pressure");
+      newFile.close();
+    } else {
+      Serial.println("Failed to create new file!");
+      return;
+    }
   }
 
-  // Write headers if the file is new
-  if (!fileExists) {
-    for (int i = 0; i < sizeof(csvHeaders) / sizeof(csvHeaders[0]); i++) {
-      dataFile.print(csvHeaders[i]);
-      if (i < (sizeof(csvHeaders) / sizeof(csvHeaders[0])) - 1) dataFile.print(",");
+  // Now open for appending
+  File dataFile = SD.open(filename, FILE_WRITE);
+  if (dataFile) {
+    for (int i = 0; i < valueCount; i++) {
+      dataFile.print(values[i]);
+      if (i < valueCount - 1) dataFile.print(",");
     }
     dataFile.println();
+    dataFile.close();
+    Serial.println("Data written to CSV.");
+  } else {
+    Serial.println("Error opening file!");
   }
-
-  // Write all fields
-  for (int i = 0; i < fieldCount; i++) {
-    dataFile.print(fields[i]);
-    if (i < fieldCount - 1) dataFile.print(",");
-  }
-  dataFile.println();
-
-  dataFile.close();
-  Serial.println("Values written to CSV.");
 }
+
 
 
 char* fileNameFromTime() {
   // Generates file Name based on Current Time, for now each reading will be its own file 
   // which is alright, in the future it will be generated based on date
-  static char filename[50]; // persistent buffer across calls
+  static char filename[15]; // enough for "U42.CSV\0"
   int uptimeMinutes = millis() / 60000;
-  // start with prefix
-  strcpy(filename, "SensorReading_Uptime_");
-  // append number
-  char numBuf[10];
-  itoa(uptimeMinutes, numBuf, 10);
-  strcat(filename, numBuf);
-  // add extension if you want
-  strcat(filename, ".csv");
+
+  // Create short name: U + uptimeMinutes
+  snprintf(filename, sizeof(filename), "U%d.CSV", uptimeMinutes);
+  Serial.println(filename);
   return filename;
 }
 
